@@ -61,12 +61,9 @@ that is the design working.
 `live/dev/stack/main.tf` pins the module version. `live/test/stack/main.tf` and
 `live/prod/stack/main.tf` pin their own.
 
-This repository currently has no published version tags, so the stack files
-below continue to use the local module path and work without Git tags. Before
-switching to the Git source, publish both tags from the commits containing the
-corresponding module versions: `v1.2.0` for the existing baseline, then
-`v1.3.0` after the module update. Push each tag to GitHub. A tag must point to
-the commit that contains that version of `modules/s3-bucket`.
+The stack source points to this repository's `modules/s3-bucket` folder at an
+immutable Git tag. `v1.2.0` is the baseline; `v1.3.0` adds optional
+`additional_tags`, which is empty by default and is enabled in dev only.
 
 ```hcl
 # live/dev/stack/main.tf
@@ -76,10 +73,9 @@ source = "git::https://github.com/BhushDevOps/terraform-multi-env.git//modules/s
 source = "git::https://github.com/BhushDevOps/terraform-multi-env.git//modules/s3-bucket?ref=v1.2.0"
 ```
 
-After publishing the tags, replace the local `source` path in each account's
-`stack/main.tf` with the corresponding Git source above. Change the module,
-tag `v1.3.0`, bump **only** `live/dev/stack/main.tf`.
-The six test and prod stacks still resolve `v1.2.0`, so their plan says
+The tag in `source` tells Terraform which repository snapshot to download.
+Changing dev's ref to `v1.3.0` makes only the dev account load that module
+version; test and prod still resolve `v1.2.0`, so their plan says
 *No changes*. That empty plan is your proof to the reviewer.
 
 The pin sits at the **account** level, not the environment level, and that is
@@ -87,9 +83,22 @@ deliberate: promotion between accounts is what you gate and review. If you need
 one environment to try a version ahead of its siblings, give that environment its
 own `stack/` folder temporarily, then fold it back once the version is promoted.
 
-*(The local path keeps this practice repo runnable before version tags are
-published. The Git source above points to this repository's `modules/s3-bucket`
-folder.)*
+Run `plan` through the wrapper after changing the module ref. It runs `init`
+using a separate `TF_DATA_DIR` for that environment, downloads the pinned
+module version, then plans against that environment's backend and variables.
+Apply only after reviewing the plan:
+
+```powershell
+.\scripts\tf.ps1 dev env1 plan
+.\scripts\tf.ps1 dev env1 apply
+```
+
+Repeat for `dev env2` and `dev env3` when ready; they share the dev stack code,
+but each has its own state and must be planned and applied separately.
+
+To release a later version, commit the module change, create a Git tag such as
+`v1.4.0` on that commit, and push the tag. Then update the desired account's
+`source` ref and plan its environments. Never move an existing version tag.
 
 ### 2. State — one bucket per account, one key per environment
 
@@ -240,11 +249,10 @@ environments inside an account apply in parallel. Required reviewers on the
 
 ## Trying the isolation yourself
 
-1. Add a new optional variable to `modules/s3-bucket` (default keeps old behaviour).
-2. `.\scripts\tf.ps1 dev env1 plan` — the change appears.
-3. `.\scripts\tf.ps1 test env1 plan` and `prod env1 plan` — no changes.
-4. Set the new variable in `live/dev/env1/terraform.tfvars` only. Plan again.
-   Still nothing in `dev/env2`, `dev/env3`, test or prod.
+1. `additional_tags` is an optional v1.3.0 input with an empty default.
+2. Dev sets `module-version = "1.3.0"`, so its plan shows the bucket tag change.
+3. Test and prod load v1.2.0 and do not receive the new input.
+4. Each dev environment uses the same module version but has separate state.
 
 ## Scaling further
 

@@ -7,15 +7,11 @@
 # THE MODULE VERSION IS PINNED HERE, ONCE PER ACCOUNT:
 #   test  -> v1.2.0   (same pin as prod until dev soak passes)
 #
-# After publishing the v1.2.0 tag, the Git source line is:
-#   source = "git::https://github.com/BhushDevOps/terraform-multi-env.git//modules/s3-bucket?ref=v1.2.0"
-#
-# This practice repo uses a local path so it runs without a second checkout.
-# Swap the line when you split modules into their own repository.
+# Test remains pinned to the v1.2.0 baseline until dev has been verified.
 # =============================================================================
 
 module "app_bucket" {
-  source = "../../../modules/s3-bucket"
+  source = "git::https://github.com/BhushDevOps/terraform-multi-env.git//modules/s3-bucket?ref=v1.2.0"
 
   bucket_name               = local.bucket_name
   versioning_enabled        = var.versioning_enabled

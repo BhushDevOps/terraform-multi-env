@@ -10,7 +10,7 @@ you change the module for dev only.
 
 ```hcl
 module "app_bucket" {
-  source = "git::https://github.com/<org>/terraform-modules.git//modules/s3-bucket?ref=v1.3.0"
+  source = "git::https://github.com/BhushDevOps/terraform-multi-env.git//modules/s3-bucket?ref=v1.3.0"
 }
 ```
 
@@ -26,6 +26,7 @@ module "app_bucket" {
 | `block_public_access` | bool | `true` | Blocks all public access |
 | `lifecycle_expiration_days` | number | `0` | Deletes old versions after N days. `0` turns the rule off |
 | `tags` | map(string) | `{}` | Tags for the bucket |
+| `additional_tags` | map(string) | `{}` | Extra tags merged with `tags`; matching keys in this map win |
 
 ## Outputs
 

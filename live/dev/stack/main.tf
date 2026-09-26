@@ -7,15 +7,11 @@
 # THE MODULE VERSION IS PINNED HERE, ONCE PER ACCOUNT:
 #   dev  -> v1.3.0   (newest, being soaked here first)
 #
-# After publishing the v1.3.0 tag, the Git source line is:
-#   source = "git::https://github.com/BhushDevOps/terraform-multi-env.git//modules/s3-bucket?ref=v1.3.0"
-#
-# This practice repo uses a local path so it runs without a second checkout.
-# Swap the line when you split modules into their own repository.
+# Dev is pinned to v1.3.0 so this account can test the added additional_tags input.
 # =============================================================================
 
 module "app_bucket" {
-  source = "../../../modules/s3-bucket"
+  source = "git::https://github.com/BhushDevOps/terraform-multi-env.git//modules/s3-bucket?ref=v1.3.0"
 
   bucket_name               = local.bucket_name
   versioning_enabled        = var.versioning_enabled
@@ -23,6 +19,7 @@ module "app_bucket" {
   lifecycle_expiration_days = var.lifecycle_expiration_days
   block_public_access       = true
   sse_algorithm             = "AES256"
+  additional_tags           = { "module-version" = "1.3.0" }
 
   tags = {
     Name = local.bucket_name

@@ -49,3 +49,9 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "additional_tags" {
+  description = "Additional tags to merge into tags. These values override matching keys in tags."
+  type        = map(string)
+  default     = {}
+}
