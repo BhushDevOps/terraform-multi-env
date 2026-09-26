@@ -1,0 +1,74 @@
+name: terraform
+
+# 3 accounts x 3 environments = 9 stacks.
+#
+# Pull request : plan every stack, in parallel. Reviewer reads 9 plans and
+#                checks that only the intended ones are non-empty.
+# Merge to main: apply account by account. dev first, then test, then prod.
+#                Environments inside one account apply in parallel - they are
+#                independent and share nothing except the state bucket.
+
+on:
+  pull_request:
+    paths: ["live/**", "modules/**"]
+  push:
+    branches: [main]
+    paths: ["live/**", "modules/**"]
+
+permissions:
+  contents: read
+  id-token: write # OIDC. No long lived AWS keys anywhere.
+  pull-requests: write
+
+env:
+  TF_VERSION: 1.9.8
+
+jobs:
+  # ---------------------------------------------------------------- plan ----
+  plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        account: [dev, test, prod]
+        environment: [env1, env2, env3]
+    # GitHub Environment named e.g. "dev-env1" holds that stack's AWS role ARN.
+    environment: ${{ matrix.account }}-${{ matrix.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }} # differs per environment
+          aws-region: ap-south-1
+      - name: fmt
+        run: terraform fmt -check -recursive
+      - name: plan
+        run: ./scripts/tf.sh ${{ matrix.account }} ${{ matrix.environment }} plan
+
+  # --------------------------------------------------------------- apply ----
+  apply-dev:
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/apply-account.yml
+    with:
+      account: dev
+    secrets: inherit
+
+  apply-test:
+    if: github.event_name == 'push'
+    needs: apply-dev
+    uses: ./.github/workflows/apply-account.yml
+    with:
+      account: test
+    secrets: inherit
+
+  apply-prod:
+    if: github.event_name == 'push'
+    needs: apply-test
+    uses: ./.github/workflows/apply-account.yml
+    with:
+      account: prod
+    secrets: inherit

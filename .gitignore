@@ -1,0 +1,13 @@
+.terraform/
+.vscode/
+.terraform.lock.hcl.bak
+*.tfstate
+*.tfstate.*
+crash.log
+tfplan
+*.tfplan
+*.plan
+.terraformrc
+terraform.rc
+*.auto.tfvars
+.DS_Store

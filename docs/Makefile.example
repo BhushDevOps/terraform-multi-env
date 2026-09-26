@@ -1,0 +1,26 @@
+# Usage:  make plan ENV=dev
+ENV ?= dev
+DIR  = envs/$(ENV)
+
+.PHONY: init fmt validate plan apply destroy output
+
+init:
+	terraform -chdir=$(DIR) init -reconfigure -backend-config=backend.hcl
+
+fmt:
+	terraform fmt -recursive
+
+validate: init
+	terraform -chdir=$(DIR) validate
+
+plan: init
+	terraform -chdir=$(DIR) plan -var-file=terraform.tfvars -out=tfplan
+
+apply:
+	terraform -chdir=$(DIR) apply tfplan
+
+destroy: init
+	terraform -chdir=$(DIR) destroy -var-file=terraform.tfvars
+
+output:
+	terraform -chdir=$(DIR) output

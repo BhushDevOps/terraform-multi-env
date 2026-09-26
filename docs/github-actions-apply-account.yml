@@ -1,0 +1,39 @@
+name: apply-account
+
+# Applies every environment inside ONE AWS account.
+# Called by terraform.yml so that accounts run in order: dev -> test -> prod.
+
+on:
+  workflow_call:
+    inputs:
+      account:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true # if env1 breaks, do not carry on to env2
+      matrix:
+        environment: [env1, env2, env3]
+    # Put required reviewers on the prod-* environments in GitHub settings.
+    # That is what turns "merge to main" into a gated production release.
+    environment: ${{ inputs.account }}-${{ matrix.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-south-1
+      - name: plan
+        run: ./scripts/tf.sh ${{ inputs.account }} ${{ matrix.environment }} plan
+      - name: apply
+        run: ./scripts/tf.sh ${{ inputs.account }} ${{ matrix.environment }} apply
