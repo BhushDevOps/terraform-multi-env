@@ -44,6 +44,78 @@ terraform-multi-env/
 thin environment folders, and an environment folder contains nothing but its own
 values and its own state pointer.
 
+## State and execution flow
+
+```mermaid
+flowchart TB
+  Developer["Developer"] --> Wrapper["scripts/tf.ps1 or scripts/tf.sh<br/>select account + environment + action"]
+  CI["CI workflow examples<br/>docs/github-actions-terraform.yml<br/>docs/github-actions-apply-account.yml"] --> Wrapper
+  Wrapper -. "per-environment cache and saved plan" .-> LocalArtifacts["live/&lt;account&gt;/&lt;env&gt;/.terraform/<br/>live/&lt;account&gt;/&lt;env&gt;/tfplan"]
+
+  Wrapper --> DevStack
+  Wrapper --> TestStack
+  Wrapper --> ProdStack
+
+  subgraph Bootstrap["One-time bootstrap"]
+    BootstrapCode["bootstrap/main.tf"] --> BootstrapState["Local state<br/>bootstrap/terraform.tfstate"]
+    BootstrapCode --> BootstrapResources["Creates S3 state bucket<br/>and DynamoDB lock table<br/>in target AWS account"]
+  end
+
+  subgraph Dev["dev AWS account"]
+    DevValues["account.tfvars + selected env/terraform.tfvars"] --> DevStack["live/dev/stack<br/>shared root module"]
+    DevStack --> DevModule["modules/s3-bucket<br/>Git ref v1.3.0"]
+    DevStack --> DevResources["AWS resources<br/>S3 bucket + app object"]
+    DevModule --> DevResources
+    DevBackendFiles["selected env/backend.hcl<br/>backend.tf: backend s3 {}"] --> DevBackend["S3 bucket: demoapp-tfstate-dev-111111111111<br/>DynamoDB lock: demoapp-tflock-dev"]
+    DevStack --> DevState1["dev/env1/app/terraform.tfstate"]
+    DevStack --> DevState2["dev/env2/app/terraform.tfstate"]
+    DevStack --> DevState3["dev/env3/app/terraform.tfstate"]
+    DevBackend --> DevState1
+    DevBackend --> DevState2
+    DevBackend --> DevState3
+  end
+
+  subgraph Test["test AWS account"]
+    TestValues["account.tfvars + selected env/terraform.tfvars"] --> TestStack["live/test/stack<br/>shared root module"]
+    TestStack --> TestModule["modules/s3-bucket<br/>Git ref v1.2.0"]
+    TestStack --> TestResources["AWS resources<br/>S3 bucket + app object"]
+    TestModule --> TestResources
+    TestBackendFiles["selected env/backend.hcl<br/>backend.tf: backend s3 {}"] --> TestBackend["S3 bucket: demoapp-tfstate-test-222222222222<br/>DynamoDB lock: demoapp-tflock-test"]
+    TestStack --> TestState1["test/env1/app/terraform.tfstate"]
+    TestStack --> TestState2["test/env2/app/terraform.tfstate"]
+    TestStack --> TestState3["test/env3/app/terraform.tfstate"]
+    TestBackend --> TestState1
+    TestBackend --> TestState2
+    TestBackend --> TestState3
+  end
+
+  subgraph Prod["prod AWS account"]
+    ProdValues["account.tfvars + selected env/terraform.tfvars"] --> ProdStack["live/prod/stack<br/>shared root module"]
+    ProdStack --> ProdModule["modules/s3-bucket<br/>Git ref v1.2.0"]
+    ProdStack --> ProdResources["AWS resources<br/>S3 bucket + app object"]
+    ProdModule --> ProdResources
+    ProdBackendFiles["selected env/backend.hcl<br/>backend.tf: backend s3 {}"] --> ProdBackend["S3 bucket: demoapp-tfstate-prod-333333333333<br/>DynamoDB lock: demoapp-tflock-prod"]
+    ProdStack --> ProdState1["prod/env1/app/terraform.tfstate"]
+    ProdStack --> ProdState2["prod/env2/app/terraform.tfstate"]
+    ProdStack --> ProdState3["prod/env3/app/terraform.tfstate"]
+    ProdBackend --> ProdState1
+    ProdBackend --> ProdState2
+    ProdBackend --> ProdState3
+  end
+
+  BootstrapResources -. "provisions" .-> DevBackend
+  BootstrapResources -. "provisions" .-> TestBackend
+  BootstrapResources -. "provisions" .-> ProdBackend
+```
+
+Each run selects one environment: its `backend.hcl` chooses exactly one state
+key, while `account.tfvars` and that environment's `terraform.tfvars` provide
+the stack values. The wrapper keeps the environment's `.terraform` cache and
+saved `tfplan` beside its inputs; neither is the remote Terraform state file.
+Bootstrap itself uses local state, so use a separate bootstrap working
+directory/state file for each AWS account rather than reusing one local state
+across dev, test, and prod.
+
 ## Why the stack is shared, not copied per environment
 
 If every environment had its own full copy of `main.tf`, you would have nine
