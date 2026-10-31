@@ -111,8 +111,10 @@ s3://demoapp-tfstate-dev-111111111111/dev/env2/app/terraform.tfstate
 ```
 
 The bucket belongs to the account because the account is the security boundary.
-The environments differ by key. One DynamoDB lock table per account is enough —
-locks are per state file, so env1 and env2 never block each other.
+The environments differ by key. Each backend uses an S3-native lockfile
+(`use_lockfile = true`) stored beside that environment's state, so env1 and env2
+never block each other. Existing DynamoDB lock tables are retained but no longer
+used by the backend.
 
 `backend.tf` has an empty `backend "s3" {}` block; the values come from each
 environment's `backend.hcl` at init time.
@@ -217,3 +219,25 @@ OIDC for CI credentials so there are no static keys anywhere.
 **How do you stop environments drifting apart?**
 Same stack, same module, only tfvars differ. Any difference has to be expressed
 as a variable — never as extra resources in one environment's copy of the code.
+
+---
+
+## 9. Follow-up: "and if the team uses EKS across these accounts?"
+
+> The cluster is an **account-level** layer, not an environment-level one.
+> `live/<account>/02-eks/` owns one cluster per account with its own state
+> file, run by the platform team. The environments stay thin: each gets a
+> namespace on that shared cluster and reads the cluster's outputs through
+> `terraform_remote_state` to build only its own namespace-scoped resources,
+> such as an IRSA role pinned to `system:serviceaccount:env1:app`.
+>
+> Dependencies flow one way: `02-eks` publishes a small, stable set of outputs
+> (cluster name, OIDC provider ARN) and the env layers consume them. An apply
+> in env1 cannot break env2, and neither can touch the cluster.
+>
+> Upgrades use the same promotion as every other module: bump
+> `cluster_version` and `addon_versions` in dev's tfvars, soak, then test, then
+> prod. Prod pins the node AMI release so a node roll is always deliberate.
+
+Files: `modules/eks/`, `modules/irsa/`, `live/*/02-eks/`, `live/*/stack/eks.tf`,
+`docs/EKS_UPGRADE_RUNBOOK.md`.

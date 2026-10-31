@@ -1,9 +1,10 @@
-# One-time bootstrap: creates the S3 bucket and DynamoDB table that hold
-# Terraform state for ONE AWS ACCOUNT. Run it once per account with local
-# state, then never touch it again.
+# One-time bootstrap: creates the S3 state bucket and a legacy DynamoDB lock
+# table for ONE AWS ACCOUNT. Current backends use S3-native lockfiles; the table
+# is retained for now. Run it once per account with local state.
 #
 # All environments inside that account (env1, env2, env3 ...) share this one
-# bucket and one lock table. They stay apart because each has its own KEY:
+# bucket. Current backend locks use S3 lockfiles; the legacy table is retained.
+# Environments stay apart because each has its own KEY:
 #   dev/env1/app/terraform.tfstate
 #   dev/env2/app/terraform.tfstate
 #
@@ -29,7 +30,7 @@ variable "account_alias" { type = string }
 variable "account_id" { type = string }
 variable "region" {
   type    = string
-  default = "ap-south-1"
+  default = "us-east-1"
 }
 
 locals {

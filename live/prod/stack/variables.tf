@@ -57,3 +57,21 @@ variable "lifecycle_expiration_days" {
   type        = number
   default     = 0
 }
+
+# ---- shared EKS (account level; values from ../account.tfvars) -------------
+
+variable "state_bucket" {
+  description = "This account's state bucket. Used to read the 02-eks layer outputs."
+  type        = string
+}
+
+variable "state_region" {
+  description = "Region of the state bucket."
+  type        = string
+}
+
+variable "eks_enabled" {
+  description = "Read the shared 02-eks layer and create this env's IRSA role. false until 02-eks is applied."
+  type        = bool
+  default     = false
+}

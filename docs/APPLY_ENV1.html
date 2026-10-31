@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apply dev/env1 — step by step (terraform-multi-env)</title>
+<style>
+  body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:24px auto;color:#222;max-width:1100px;line-height:1.55;padding:0 16px}
+  h1{font-size:24px;margin-bottom:4px}
+  h2{font-size:19px;margin-top:34px;border-bottom:2px solid #e3e8ef;padding-bottom:4px}
+  h3{font-size:16px;margin:18px 0 6px}
+  .sub{color:#666;font-size:14px;margin-top:0}
+  code{background:#f3f3f3;padding:1px 5px;border-radius:3px;font-size:13px}
+  pre{background:#1e2430;color:#e6edf3;padding:12px 14px;border-radius:6px;overflow-x:auto;font-size:12.8px;line-height:1.45}
+  pre.out{background:#f6f8fa;color:#24292f;border:1px solid #d0d7de}
+  pre .c{color:#8b949e}
+  pre.out .c{color:#6e7781}
+  pre .g{color:#2da44e}
+  pre .y{color:#d4a72c}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14px}
+  th,td{border:1px solid #d5dbe3;padding:6px 10px;text-align:left;vertical-align:top}
+  th{background:#eef2f7}
+  .step{border:1px solid #dde3ea;border-radius:8px;padding:6px 18px 12px;margin:16px 0;background:#fbfcfe}
+  .step h3{margin-top:10px}
+  .tag{display:inline-block;font-size:12px;font-weight:600;padding:2px 8px;border-radius:10px;margin-left:6px;vertical-align:middle}
+  .once{background:#e8f0fe;color:#1a4fb5}
+  .env{background:#e6f4ea;color:#1e6b34}
+  .skip{background:#eee;color:#555}
+  .ok{background:#e6f4ea;border-left:4px solid #34a853;padding:8px 12px;margin:10px 0;font-size:14px}
+  .warn{background:#fff8e1;border-left:4px solid #f0b429;padding:8px 12px;margin:10px 0;font-size:14px}
+  .bad{background:#fdecea;border-left:4px solid #d93025;padding:8px 12px;margin:10px 0;font-size:14px}
+  .why{background:#f1f5ff;border-left:4px solid #7aa7e0;padding:8px 12px;margin:10px 0;font-size:14px}
+  .why b{color:#1a4fb5}
+  .flow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:12px 0;font-size:13.5px}
+  .flow span.b{background:#fff;border:1px solid #9aa9bd;border-radius:6px;padding:6px 10px}
+  .flow span.a{color:#888}
+  .lbl{font-size:12px;font-weight:600;color:#666;text-transform:uppercase;letter-spacing:.04em;margin:10px 0 2px}
+</style>
+</head>
+<body>
+
+<h1>Apply <code>dev/env1</code> — step by step</h1>
+<p class="sub">Repo: <code>terraform-multi-env</code>. Every command, why it is needed, and what you should see. Values are the real ones from <code>live/dev/</code>: account <b>708485767572</b>, state bucket <b>demo-app-tfstate-bk-dev-708485767572</b>.</p>
+
+<div class="flow">
+  <span class="b">0. Credentials</span><span class="a">→</span>
+  <span class="b">1. Bootstrap <small>(once per account)</small></span><span class="a">→</span>
+  <span class="b">2. 02-eks <small>(once per account)</small></span><span class="a">→</span>
+  <span class="b">3. env1 <small>(per env)</small></span><span class="a">→</span>
+  <span class="b">4. Join env1 to cluster</span>
+</div>
+
+<div class="why"><b>Why this order:</b> each box has its own state file and reads outputs from the box before it. env1 reads 02-eks (when <code>eks_enabled = true</code>), 02-eks needs the state bucket from bootstrap. Nothing reads env1, so env1 is always safe to apply last and to destroy first.</div>
+
+<table>
+  <tr><th style="width:18%">Layer</th><th style="width:26%">Folder</th><th>State file</th><th>Run</th></tr>
+  <tr><td>bootstrap</td><td><code>bootstrap/</code></td><td>local <code>bootstrap/terraform.tfstate</code></td><td>once per account</td></tr>
+  <tr><td>shared cluster</td><td><code>live/dev/02-eks/</code></td><td><code>s3://…/dev/02-eks/terraform.tfstate</code></td><td>once per account</td></tr>
+  <tr><td>environment</td><td><code>live/dev/stack/</code> + <code>live/dev/env1/</code></td><td><code>s3://…/dev/env1/app/terraform.tfstate</code></td><td>once per env</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<div class="step">
+<h3>Step 0 — Credentials <span class="tag env">every run</span></h3>
+<div class="why"><b>Why:</b> <code>providers.tf</code> has <code>allowed_account_ids = [var.account_id]</code>. If your shell is pointed at the wrong account, Terraform refuses before it touches anything. Check first, so the refusal is not the first thing you see.</div>
+<pre>$env:AWS_PROFILE = "dev"          <span class="c"># or set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY</span>
+aws sts get-caller-identity</pre>
+<p class="lbl">Expected output</p>
+<pre class="out">{
+    "UserId": "AROAXXXXXXXXXXXXXXXXX:bhushan",
+    "Account": "708485767572",          <span class="c">&lt;-- must match live/dev/account.tfvars</span>
+    "Arn": "arn:aws:sts::708485767572:assumed-role/admin/bhushan"
+}</pre>
+<div class="bad"><b>If Account is different</b> you will later get:<br><code>Error: AWS account ID not allowed: 333333333333</code>. Fix the profile, not the tfvars.</div>
+</div>
+
+<!-- ============================================================ -->
+<div class="step">
+<h3>Step 1 — Bootstrap the state bucket <span class="tag once">once per account</span> <span class="tag skip">already done for dev</span></h3>
+<div class="why"><b>Why:</b> every other layer stores its state in S3. That bucket cannot create itself, so <code>bootstrap/</code> keeps its own state <b>locally</b> and creates the bucket + lock table. This is the only local state in the repo.</div>
+<pre>cd bootstrap
+terraform init
+terraform apply</pre>
+<p class="lbl">Expected output (abridged)</p>
+<pre class="out">aws_s3_bucket.tfstate: Creating...
+aws_s3_bucket.tfstate: Creation complete after 2s [id=demo-app-tfstate-bk-dev-708485767572]
+aws_s3_bucket_versioning.tfstate: Creation complete after 1s
+aws_dynamodb_table.tflock: Creation complete after 8s
+
+<span class="g">Apply complete! Resources: 4 added, 0 changed, 0 destroyed.</span>
+
+Outputs:
+state_bucket = "demo-app-tfstate-bk-dev-708485767572"</pre>
+<div class="ok">For dev this already exists. Skip to step 2. For a <b>new</b> account (test/prod) run this first, then put the bucket name into that account's <code>backend.hcl</code> files and <code>account.tfvars</code> → <code>state_bucket</code>.</div>
+</div>
+
+<!-- ============================================================ -->
+<div class="step">
+<h3>Step 2 — Shared cluster <code>live/dev/02-eks</code> <span class="tag once">once per account</span></h3>
+<div class="why"><b>Why:</b> env1, env2 and env3 do <b>not</b> get a cluster each. One cluster per account, owned by the platform team, with its own state. The env layers only read its outputs. If you only need the S3 part of env1 today, skip this step and leave <code>eks_enabled = false</code>.</div>
+<div class="warn">Before applying, replace the placeholder <code>private_subnet_ids</code> in <code>live/dev/02-eks/terraform.tfvars</code> with real private subnets of <code>vpc-02198915b9626acaa</code>.</div>
+<pre>cd live\dev\02-eks
+
+terraform init -backend-config=backend.hcl
+terraform plan  -var-file=..\account.tfvars -out=tfplan
+terraform apply tfplan                                  <span class="c"># ~15 min, cluster creation is slow</span>
+terraform output</pre>
+
+<p class="lbl">What each flag does</p>
+<table>
+  <tr><th>Flag</th><th>Reads</th><th>Why</th></tr>
+  <tr><td><code>-backend-config=backend.hcl</code></td><td>bucket, key <code>dev/02-eks/terraform.tfstate</code></td><td><code>backend.tf</code> is an empty <code>backend "s3" {}</code>. The key is given at init so the same code can be used in test/prod with a different key.</td></tr>
+  <tr><td><code>-var-file=..\account.tfvars</code></td><td>project, account_id, region, owner</td><td>Values shared by everything in the dev account. Not repeated per layer.</td></tr>
+  <tr><td><code>terraform.tfvars</code> (auto-loaded)</td><td>cluster_version, addon_versions, node sizes</td><td>Layer-specific values. This is the file an upgrade PR changes.</td></tr>
+  <tr><td><code>-out=tfplan</code></td><td>—</td><td>Apply runs exactly the plan you reviewed, not a fresh one.</td></tr>
+</table>
+
+<p class="lbl">Expected output — init</p>
+<pre class="out">Initializing the backend...
+
+<span class="g">Successfully configured the backend "s3"!</span> Terraform will automatically
+use this backend unless the backend configuration changes.
+
+Initializing modules...
+- eks in ..\..\..\modules\eks
+
+Initializing provider plugins...
+- Installing hashicorp/aws v5.x ...
+- Installing hashicorp/tls v4.x ...
+
+<span class="g">Terraform has been successfully initialized!</span></pre>
+
+<p class="lbl">Expected output — plan (abridged)</p>
+<pre class="out">  # module.eks.aws_eks_cluster.main will be created
+  + resource "aws_eks_cluster" "main" {
+      + name    = "demoapp-dev-eks"
+      + version = "1.36"
+      ...
+  # module.eks.aws_eks_node_group.platform will be created
+  + resource "aws_eks_node_group" "platform" {
+      + ami_type        = "AL2023_x86_64_STANDARD"
+      + version         = (known after apply)        <span class="c">&lt;-- follows the cluster</span>
+      + update_config { + max_unavailable = 1 }
+  # module.eks.aws_eks_addon.coredns will be created
+  + resource "aws_eks_addon" "coredns" {
+      + addon_version               = "v1.12.1-eksbuild.2"
+      + resolve_conflicts_on_update = "PRESERVE"
+  ... (kube_proxy, vpc_cni, pod_identity_agent, ebs_csi)
+  # module.eks.aws_iam_openid_connect_provider.main will be created
+  # module.eks.aws_iam_role.karpenter_controller[0] will be created
+  # module.eks.aws_iam_role.karpenter_node[0] will be created
+  ...
+
+<span class="y">Plan: 25 to add, 0 to change, 0 to destroy.</span>
+
+Saved the plan to: tfplan</pre>
+
+<p class="lbl">Expected output — apply + output</p>
+<pre class="out">module.eks.aws_eks_cluster.main: Still creating... [10m0s elapsed]
+module.eks.aws_eks_cluster.main: Creation complete after 10m42s [id=demoapp-dev-eks]
+module.eks.aws_eks_node_group.platform: Creation complete after 3m05s
+module.eks.aws_eks_addon.coredns: Creation complete after 1m10s
+...
+<span class="g">Apply complete! Resources: 25 added, 0 changed, 0 destroyed.</span>
+
+Outputs:
+
+cluster_name                  = "demoapp-dev-eks"
+cluster_version               = "1.36"
+cluster_endpoint              = "https://ABCD1234.gr7.us-east-1.eks.amazonaws.com"
+oidc_provider_arn             = "arn:aws:iam::708485767572:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/ABCD1234"
+oidc_provider_url             = "oidc.eks.us-east-1.amazonaws.com/id/ABCD1234"
+karpenter_controller_role_arn = "arn:aws:iam::708485767572:role/demoapp-dev-eks-karpenter-controller"
+karpenter_node_role_name      = "demoapp-dev-eks-karpenter-node"
+kubeconfig_command            = "aws eks update-kubeconfig --name demoapp-dev-eks --region us-east-1"</pre>
+<div class="ok"><b>These outputs are the contract.</b> env1 and env2 will read <code>oidc_provider_arn</code> and <code>oidc_provider_url</code> from this state in step 4. <code>karpenter_*</code> go into the gitops repo.</div>
+
+<p class="lbl">Verify</p>
+<pre>aws eks update-kubeconfig --name demoapp-dev-eks --region us-east-1
+kubectl get nodes -L role
+kubectl -n kube-system get pods</pre>
+<pre class="out">NAME                           STATUS   ROLES    AGE   VERSION   ROLE
+ip-10-0-1-23.ec2.internal      Ready    &lt;none&gt;   4m    v1.36.0   platform
+ip-10-0-2-41.ec2.internal      Ready    &lt;none&gt;   4m    v1.36.0   platform</pre>
+</div>
+
+<!-- ============================================================ -->
+<div class="step">
+<h3>Step 3 — Environment <code>live/dev/env1</code> <span class="tag env">once per env</span></h3>
+<div class="why"><b>Why it looks odd:</b> <code>env1/</code> has <b>no</b> <code>.tf</code> files, only <code>backend.hcl</code> and <code>terraform.tfvars</code>. The code is in <code>live/dev/stack/</code> and is shared by env1, env2, env3. You run the stack folder and <i>point it at</i> env1. Same code, different state key, different values. That is how three environments share one account without colliding.</div>
+
+<pre><span class="c"># 1. Give env1 its own .terraform directory</span>
+$env:TF_DATA_DIR = "..\env1\.terraform"
+
+<span class="c"># 2. Init the shared stack against env1's state key</span>
+terraform -chdir=live\dev\stack init -reconfigure -backend-config=..\env1\backend.hcl
+
+<span class="c"># 3. Plan with account values + env1 values, save the plan next to env1</span>
+terraform -chdir=live\dev\stack plan `
+    -var-file=..\account.tfvars `
+    -var-file=..\env1\terraform.tfvars `
+    -out=..\env1\tfplan
+
+<span class="c"># 4. Apply exactly that plan</span>
+terraform -chdir=live\dev\stack apply ..\env1\tfplan</pre>
+
+<p class="lbl">Why each line</p>
+<table>
+  <tr><th style="width:30%">Line</th><th>Why it is needed</th></tr>
+  <tr><td><code>$env:TF_DATA_DIR = "..\env1\.terraform"</code></td><td><b>The most important line.</b> Terraform caches the backend pointer in <code>.terraform/</code>. If env1 and env2 shared <code>stack/.terraform/</code>, a plan for env1 could be applied onto env2's state. A separate data dir per env makes that impossible. Paths are relative to <code>stack/</code> because <code>-chdir</code> moves there.</td></tr>
+  <tr><td><code>init -reconfigure</code></td><td>Forces Terraform to re-read the backend config instead of trusting the cached one. Harmless when nothing changed, essential when you switch from env1 to env2.</td></tr>
+  <tr><td><code>-backend-config=..\env1\backend.hcl</code></td><td>Sets the state key to <code>dev/env1/app/terraform.tfstate</code>. Same bucket as 02-eks, different key.</td></tr>
+  <tr><td><code>-var-file=..\account.tfvars</code></td><td>account_id, region, <code>state_bucket</code> (used by <code>stack/eks.tf</code> to find the 02-eks state).</td></tr>
+  <tr><td><code>-var-file=..\env1\terraform.tfvars</code></td><td><code>env_name = "env1"</code> goes into every resource name, plus bucket settings and <code>eks_enabled</code>.</td></tr>
+  <tr><td><code>-out=..\env1\tfplan</code> then <code>apply ..\env1\tfplan</code></td><td>Apply never re-plans. What the reviewer saw is what runs. Also the reason the wrapper refuses to apply without a saved plan.</td></tr>
+</table>
+
+<p class="lbl">Expected output — init</p>
+<pre class="out">Initializing the backend...
+
+<span class="g">Successfully configured the backend "s3"!</span>
+
+Initializing modules...
+Downloading git::https://github.com/BhushDevOps/terraform-multi-env.git?ref=v1.3.0 for app_bucket...
+- app_bucket in ..\env1\.terraform\modules\app_bucket\modules\s3-bucket
+- app_irsa in ..\..\..\modules\irsa          <span class="c">&lt;-- loaded even with eks_enabled=false; count=0 at plan</span>
+
+<span class="g">Terraform has been successfully initialized!</span></pre>
+
+<p class="lbl">Expected output — plan (eks_enabled = false)</p>
+<pre class="out">  # aws_s3_object.app_index will be created
+  + resource "aws_s3_object" "app_index" {
+      + bucket       = (known after apply)
+      + key          = "index.html"
+      + content      = "&lt;h1&gt;demoapp&lt;/h1&gt;&lt;p&gt;account: dev&lt;/p&gt;&lt;p&gt;environment: env1&lt;/p&gt;"
+
+  # module.app_bucket.aws_s3_bucket.this will be created
+  + resource "aws_s3_bucket" "this" {
+      + bucket = "demoapp-dev-env1-app-708485767572"   <span class="c">&lt;-- env_name is in the name</span>
+      + tags   = { "Name" = "...", "module-version" = "1.3.0" }
+      + tags_all = { "Account" = "dev", "Environment" = "env1", "ManagedBy" = "terraform", ... }
+
+  # module.app_bucket.aws_s3_bucket_public_access_block.this will be created
+  # module.app_bucket.aws_s3_bucket_server_side_encryption_configuration.this will be created
+  # module.app_bucket.aws_s3_bucket_versioning.this will be created
+
+<span class="y">Plan: 5 to add, 0 to change, 0 to destroy.</span>
+
+Changes to Outputs:
+  + app_irsa_role_arn = null          <span class="c">&lt;-- null because eks_enabled = false</span>
+  + app_object_url    = (known after apply)
+  + bucket_arn        = (known after apply)
+  + bucket_name       = "demoapp-dev-env1-app-708485767572"
+  + eks_cluster_name  = null
+  + k8s_namespace     = null
+
+Saved the plan to: ..\env1\tfplan</pre>
+
+<p class="lbl">Expected output — apply</p>
+<pre class="out">module.app_bucket.aws_s3_bucket.this: Creating...
+module.app_bucket.aws_s3_bucket.this: Creation complete after 2s [id=demoapp-dev-env1-app-708485767572]
+module.app_bucket.aws_s3_bucket_versioning.this: Creation complete after 1s
+module.app_bucket.aws_s3_bucket_server_side_encryption_configuration.this: Creation complete after 1s
+module.app_bucket.aws_s3_bucket_public_access_block.this: Creation complete after 0s
+aws_s3_object.app_index: Creation complete after 0s [id=index.html]
+
+<span class="g">Apply complete! Resources: 5 added, 0 changed, 0 destroyed.</span>
+
+Outputs:
+
+app_irsa_role_arn = null
+app_object_url    = "s3://demoapp-dev-env1-app-708485767572/index.html"
+bucket_arn        = "arn:aws:s3:::demoapp-dev-env1-app-708485767572"
+bucket_name       = "demoapp-dev-env1-app-708485767572"
+eks_cluster_name  = null
+k8s_namespace     = null</pre>
+
+<p class="lbl">Verify the state landed in the right place</p>
+<pre>aws s3 ls s3://demo-app-tfstate-bk-dev-708485767572/dev/ --recursive</pre>
+<pre class="out">2026-10-27 10:12:03    41233 dev/02-eks/terraform.tfstate
+2026-10-27 10:31:48     6120 dev/env1/app/terraform.tfstate     <span class="c">&lt;-- env1's own file</span></pre>
+</div>
+
+<!-- ============================================================ -->
+<div class="step">
+<h3>Step 4 — Join env1 to the shared cluster <span class="tag env">per env, after step 2</span></h3>
+<div class="why"><b>Why a separate step:</b> <code>eks_enabled</code> defaults to <code>false</code> so an env can be created before the cluster exists, and so test/prod envs plan clean until their account's 02-eks is applied. Flipping it adds exactly one thing: an IAM role that only pods in namespace <code>env1</code>, service account <code>app</code>, can assume. env2 gets its own role; neither can use the other's.</div>
+
+<p class="lbl">1. Edit <code>live/dev/env1/terraform.tfvars</code></p>
+<pre>eks_enabled = true     <span class="c"># was false</span></pre>
+
+<p class="lbl">2. Re-run step 3 (init is already done, but re-running it is harmless)</p>
+<pre>$env:TF_DATA_DIR = "..\env1\.terraform"
+terraform -chdir=live\dev\stack plan  -var-file=..\account.tfvars -var-file=..\env1\terraform.tfvars -out=..\env1\tfplan
+terraform -chdir=live\dev\stack apply ..\env1\tfplan</pre>
+
+<p class="lbl">Expected output — plan</p>
+<pre class="out">data.terraform_remote_state.eks[0]: Reading...          <span class="c">&lt;-- reads dev/02-eks/terraform.tfstate</span>
+data.terraform_remote_state.eks[0]: Read complete after 1s
+
+  # module.app_irsa[0].aws_iam_role.this will be created
+  + resource "aws_iam_role" "this" {
+      + name               = "demoapp-dev-env1-app"
+      + assume_role_policy = jsonencode({
+          Statement = [{
+              Action    = "sts:AssumeRoleWithWebIdentity"
+              Principal = { Federated = "arn:aws:iam::708485767572:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/ABCD1234" }
+              Condition = {
+                  StringEquals = {
+                      "oidc.eks.us-east-1.amazonaws.com/id/ABCD1234:sub" = "system:serviceaccount:env1:app"   <span class="c">&lt;-- env1 only</span>
+                      "oidc.eks.us-east-1.amazonaws.com/id/ABCD1234:aud" = "sts.amazonaws.com"
+                  }
+              }
+          }]
+        })
+
+  # module.app_irsa[0].aws_iam_role_policy.inline[0] will be created
+  + resource "aws_iam_role_policy" "inline" {
+      + name   = "demoapp-dev-env1-app-inline"
+      + policy = jsonencode({ ... "s3:GetObject" ... "arn:aws:s3:::demoapp-dev-env1-app-708485767572/*" })
+
+<span class="y">Plan: 2 to add, 0 to change, 0 to destroy.</span>
+
+Changes to Outputs:
+  ~ app_irsa_role_arn = null -> (known after apply)
+  ~ eks_cluster_name  = null -> "demoapp-dev-eks"
+  ~ k8s_namespace     = null -> "env1"</pre>
+<div class="ok">The bucket is <b>not</b> in the plan. Existing resources are untouched; only the role is added.</div>
+
+<p class="lbl">Expected output — apply + output</p>
+<pre class="out">module.app_irsa[0].aws_iam_role.this: Creation complete after 1s [id=demoapp-dev-env1-app]
+module.app_irsa[0].aws_iam_role_policy.inline[0]: Creation complete after 1s
+
+<span class="g">Apply complete! Resources: 2 added, 0 changed, 0 destroyed.</span>
+
+Outputs:
+
+app_irsa_role_arn = "arn:aws:iam::708485767572:role/demoapp-dev-env1-app"
+eks_cluster_name  = "demoapp-dev-eks"
+k8s_namespace     = "env1"
+bucket_name       = "demoapp-dev-env1-app-708485767572"</pre>
+
+<p class="lbl">3. Use the role in the gitops repo (not Terraform)</p>
+<pre><span class="c"># namespace + service account for env1</span>
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app
+  namespace: env1
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::708485767572:role/demoapp-dev-env1-app</pre>
+<p>A pod in <code>env1</code> using service account <code>app</code> can now read and write <code>demoapp-dev-env1-app-…</code> and nothing else.</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>env2 — same thing, one word changed</h2>
+<pre>$env:TF_DATA_DIR = "..\env2\.terraform"
+terraform -chdir=live\dev\stack init -reconfigure -backend-config=..\env2\backend.hcl
+terraform -chdir=live\dev\stack plan -var-file=..\account.tfvars -var-file=..\env2\terraform.tfvars -out=..\env2\tfplan
+terraform -chdir=live\dev\stack apply ..\env2\tfplan</pre>
+<p>Step 2 (02-eks) is <b>not</b> repeated. env2 gets <code>demoapp-dev-env2-app-…</code>, state key <code>dev/env2/app/</code>, role <code>demoapp-dev-env2-app</code> trusted by <code>system:serviceaccount:env2:app</code>.</p>
+
+<!-- ============================================================ -->
+<h2>Wrapper — same commands, less typing</h2>
+<p><code>scripts/tf.ps1</code> does step 3 for you (sets <code>TF_DATA_DIR</code>, inits with the env's backend, plans with both tfvars, applies the saved plan).</p>
+<pre>.\scripts\tf.ps1 dev env1 plan
+.\scripts\tf.ps1 dev env1 apply
+.\scripts\tf.ps1 dev env1 output</pre>
+<pre class="out">==&gt; init  dev/env1
+Successfully configured the backend "s3"!
+==&gt; plan  dev/env1
+Plan: 5 to add, 0 to change, 0 to destroy.
+Saved the plan to: ..\env1\tfplan</pre>
+<div class="warn">The wrapper covers <code>stack/</code> only. For <code>02-eks</code> use the raw commands in step 2.</div>
+
+<!-- ============================================================ -->
+<h2>Common errors</h2>
+<table>
+  <tr><th style="width:38%">Message</th><th>Cause</th><th>Fix</th></tr>
+  <tr><td><code>Error: AWS account ID not allowed: 333333333333</code></td><td>Shell credentials point at a different account than <code>account.tfvars</code>.</td><td>Step 0. Change <code>AWS_PROFILE</code>, never the tfvars.</td></tr>
+  <tr><td><code>Error: Backend configuration changed</code></td><td>Switched from env1 to env2 without <code>-reconfigure</code> or without changing <code>TF_DATA_DIR</code>.</td><td>Set <code>TF_DATA_DIR</code> to the env, run <code>init -reconfigure</code>.</td></tr>
+  <tr><td><code>No saved plan. Run: .\scripts\tf.ps1 dev env1 plan</code></td><td>Wrapper refuses to apply without a reviewed plan.</td><td>Run plan first.</td></tr>
+  <tr><td><code>Error: Unable to find remote state</code> on <code>data.terraform_remote_state.eks[0]</code></td><td><code>eks_enabled = true</code> but 02-eks has not been applied in this account.</td><td>Do step 2, or set <code>eks_enabled = false</code>.</td></tr>
+  <tr><td><code>Error: No value for required variable "state_bucket"</code></td><td>Forgot <code>-var-file=..\account.tfvars</code>.</td><td>Pass both var-files, or use the wrapper.</td></tr>
+  <tr><td><code>Error acquiring the state lock</code></td><td>Another plan/apply on the same env is running, or crashed.</td><td>Wait; if stale, <code>terraform force-unlock &lt;ID&gt;</code>.</td></tr>
+  <tr><td>Plan wants to <b>destroy</b> env1's bucket and create env2's</td><td>Wrong state: applied env2 values against env1's state key.</td><td><b>Do not apply.</b> Re-init with the right <code>backend.hcl</code> and <code>TF_DATA_DIR</code>.</td></tr>
+</table>
+
+<h2>Teardown order</h2>
+<pre>env3 → env2 → env1 → 02-eks → bootstrap</pre>
+<p>Reverse of creation. An env can be destroyed any time (nothing depends on it). 02-eks can be destroyed only after every env has <code>eks_enabled = false</code> applied, otherwise their IRSA roles point at a deleted OIDC provider.</p>
+<pre>$env:TF_DATA_DIR = "..\env1\.terraform"
+terraform -chdir=live\dev\stack destroy -var-file=..\account.tfvars -var-file=..\env1\terraform.tfvars</pre>
+
+</body>
+</html>

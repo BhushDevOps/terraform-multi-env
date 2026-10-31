@@ -13,14 +13,22 @@ The repo answers two questions:
 
 ```
 terraform-multi-env/
-├── modules/
-│   └── s3-bucket/              # the reusable building block
+├── modules/                    # RESOURCE DEFINITIONS live here, nowhere else
+│   ├── s3-bucket/              # the reusable building block
+│   ├── security-groups/
+│   ├── eks/                    # cluster, add-ons, node group, OIDC, Karpenter IAM
+│   └── irsa/                   # IAM role for one k8s service account
 │
 ├── live/
 │   ├── dev/                    # = one AWS account
 │   │   ├── account.tfvars      # values shared by every env in this account
-│   │   ├── stack/              # the ROOT MODULE for this account
+│   │   ├── 02-eks/             # ACCOUNT-level layer: ONE shared EKS cluster
+│   │   │   ├── main.tf         #   calls modules/eks, version PINNED here
+│   │   │   ├── terraform.tfvars#   cluster_version, addon_versions  <-- upgrades
+│   │   │   └── backend.hcl     #   its own state key: dev/02-eks/
+│   │   ├── stack/              # the ROOT MODULE for every env in this account
 │   │   │   ├── main.tf         #   <-- module version is PINNED here
+│   │   │   ├── eks.tf          #   reads 02-eks outputs, builds this env's IRSA role
 │   │   │   ├── variables.tf
 │   │   │   ├── outputs.tf
 │   │   │   ├── providers.tf
@@ -33,88 +41,92 @@ terraform-multi-env/
 │   ├── test/                   # same shape
 │   └── prod/                   # same shape
 │
-├── bootstrap/                  # run once per ACCOUNT: state bucket + lock table
+├── bootstrap/                  # run once per ACCOUNT: state bucket + legacy lock table
 ├── scripts/tf.ps1              # Windows wrapper
 ├── scripts/tf.sh               # Linux / macOS / CI wrapper
 ├── .github/workflows/
-└── docs/INTERVIEW_ANSWER.md
+├── docs/INTERVIEW_ANSWER.md
+├── docs/EKS_UPGRADE_RUNBOOK.md # step-by-step, mapped to files in this repo
+└── docs/APPLY_ENV1.html        # bootstrap -> 02-eks -> env1, with why + expected output
 ```
+
+## Shared EKS: account layer vs environment layer
+
+```
+live/dev/
+├── 02-eks/      ONE cluster, ONE state      owner: platform-team
+└── stack/       run once per env            owner: app team
+    + env1/      namespace env1, IRSA role demoapp-dev-env1-app, bucket
+    + env2/      namespace env2, IRSA role demoapp-dev-env2-app, bucket
+    + env3/      ...
+```
+
+| | shared (02-eks) | per env (stack + envN) |
+|---|---|---|
+| EKS cluster, nodes, OIDC, Karpenter IAM | yes | |
+| Kubernetes namespace | | `env1`, `env2`, `env3` |
+| IRSA role, S3 bucket | | yes |
+| State file | `dev/02-eks/terraform.tfstate` | `dev/env1/app/terraform.tfstate` |
+
+The env layer reads the cluster through `terraform_remote_state` and creates
+only its own namespace-scoped pieces. An apply in env1 cannot break env2, and
+neither can touch the cluster. Set `eks_enabled = true` in an env's tfvars
+once `02-eks` has been applied for that account.
 
 **The shape in one sentence:** one folder per account holds one stack and many
 thin environment folders, and an environment folder contains nothing but its own
 values and its own state pointer.
 
-## State and execution flow
+## State structure
 
-```mermaid
-flowchart TB
-  Developer["Developer"] --> Wrapper["scripts/tf.ps1 or scripts/tf.sh<br/>select account + environment + action"]
-  CI["CI workflow examples<br/>docs/github-actions-terraform.yml<br/>docs/github-actions-apply-account.yml"] --> Wrapper
-  Wrapper -. "per-environment cache and saved plan" .-> LocalArtifacts["live/&lt;account&gt;/&lt;env&gt;/.terraform/<br/>live/&lt;account&gt;/&lt;env&gt;/tfplan"]
+Bootstrap keeps its state locally; it is not stored in the S3 buckets below.
 
-  Wrapper --> DevStack
-  Wrapper --> TestStack
-  Wrapper --> ProdStack
+```text
+Local bootstrap state:
+bootstrap/terraform.tfstate
 
-  subgraph Bootstrap["One-time bootstrap"]
-    BootstrapCode["bootstrap/main.tf"] --> BootstrapState["Local state<br/>bootstrap/terraform.tfstate"]
-    BootstrapCode --> BootstrapResources["Creates S3 state bucket<br/>and DynamoDB lock table<br/>in target AWS account"]
-  end
+S3 Bucket: demoapp-tfstate-dev-111111111111
+S3-native locks: use_lockfile = true (.tflock object beside each state file)
+DynamoDB table: demoapp-tflock-dev (legacy; not used for locking)
+└── dev/
+    ├── env1/
+    │   └── app/terraform.tfstate
+    ├── env2/
+    │   └── app/terraform.tfstate
+    └── env3/
+        └── app/terraform.tfstate
 
-  subgraph Dev["dev AWS account"]
-    DevValues["account.tfvars + selected env/terraform.tfvars"] --> DevStack["live/dev/stack<br/>shared root module"]
-    DevStack --> DevModule["modules/s3-bucket<br/>Git ref v1.3.0"]
-    DevStack --> DevResources["AWS resources<br/>S3 bucket + app object"]
-    DevModule --> DevResources
-    DevBackendFiles["selected env/backend.hcl<br/>backend.tf: backend s3 {}"] --> DevBackend["S3 bucket: demoapp-tfstate-dev-111111111111<br/>DynamoDB lock: demoapp-tflock-dev"]
-    DevStack --> DevState1["dev/env1/app/terraform.tfstate"]
-    DevStack --> DevState2["dev/env2/app/terraform.tfstate"]
-    DevStack --> DevState3["dev/env3/app/terraform.tfstate"]
-    DevBackend --> DevState1
-    DevBackend --> DevState2
-    DevBackend --> DevState3
-  end
+S3 Bucket: demoapp-tfstate-test-222222222222
+S3-native locks: use_lockfile = true (.tflock object beside each state file)
+DynamoDB table: demoapp-tflock-test (legacy; not used for locking)
+└── test/
+    ├── env1/
+    │   └── app/terraform.tfstate
+    ├── env2/
+    │   └── app/terraform.tfstate
+    └── env3/
+        └── app/terraform.tfstate
 
-  subgraph Test["test AWS account"]
-    TestValues["account.tfvars + selected env/terraform.tfvars"] --> TestStack["live/test/stack<br/>shared root module"]
-    TestStack --> TestModule["modules/s3-bucket<br/>Git ref v1.2.0"]
-    TestStack --> TestResources["AWS resources<br/>S3 bucket + app object"]
-    TestModule --> TestResources
-    TestBackendFiles["selected env/backend.hcl<br/>backend.tf: backend s3 {}"] --> TestBackend["S3 bucket: demoapp-tfstate-test-222222222222<br/>DynamoDB lock: demoapp-tflock-test"]
-    TestStack --> TestState1["test/env1/app/terraform.tfstate"]
-    TestStack --> TestState2["test/env2/app/terraform.tfstate"]
-    TestStack --> TestState3["test/env3/app/terraform.tfstate"]
-    TestBackend --> TestState1
-    TestBackend --> TestState2
-    TestBackend --> TestState3
-  end
-
-  subgraph Prod["prod AWS account"]
-    ProdValues["account.tfvars + selected env/terraform.tfvars"] --> ProdStack["live/prod/stack<br/>shared root module"]
-    ProdStack --> ProdModule["modules/s3-bucket<br/>Git ref v1.2.0"]
-    ProdStack --> ProdResources["AWS resources<br/>S3 bucket + app object"]
-    ProdModule --> ProdResources
-    ProdBackendFiles["selected env/backend.hcl<br/>backend.tf: backend s3 {}"] --> ProdBackend["S3 bucket: demoapp-tfstate-prod-333333333333<br/>DynamoDB lock: demoapp-tflock-prod"]
-    ProdStack --> ProdState1["prod/env1/app/terraform.tfstate"]
-    ProdStack --> ProdState2["prod/env2/app/terraform.tfstate"]
-    ProdStack --> ProdState3["prod/env3/app/terraform.tfstate"]
-    ProdBackend --> ProdState1
-    ProdBackend --> ProdState2
-    ProdBackend --> ProdState3
-  end
-
-  BootstrapResources -. "provisions" .-> DevBackend
-  BootstrapResources -. "provisions" .-> TestBackend
-  BootstrapResources -. "provisions" .-> ProdBackend
+S3 Bucket: demoapp-tfstate-prod-333333333333
+S3-native locks: use_lockfile = true (.tflock object beside each state file)
+DynamoDB table: demoapp-tflock-prod (legacy; not used for locking)
+└── prod/
+    ├── env1/
+    │   └── app/terraform.tfstate
+    ├── env2/
+    │   └── app/terraform.tfstate
+    └── env3/
+        └── app/terraform.tfstate
 ```
 
-Each run selects one environment: its `backend.hcl` chooses exactly one state
-key, while `account.tfvars` and that environment's `terraform.tfvars` provide
-the stack values. The wrapper keeps the environment's `.terraform` cache and
-saved `tfplan` beside its inputs; neither is the remote Terraform state file.
-Bootstrap itself uses local state, so use a separate bootstrap working
-directory/state file for each AWS account rather than reusing one local state
-across dev, test, and prod.
+Each `backend.hcl` selects one bucket and one environment key. The account's
+shared `stack/` uses that backend and combines `account.tfvars` with the selected
+environment's `terraform.tfvars`. The wrapper stores its `.terraform` cache and
+saved `tfplan` in the environment folder; those are not state files.
+
+Bootstrap uses local state. When setting up another AWS account, use a separate
+bootstrap working directory or state path; do not reuse
+`bootstrap/terraform.tfstate` across dev, test, and prod.
 
 ## Why the stack is shared, not copied per environment
 
@@ -155,18 +167,11 @@ deliberate: promotion between accounts is what you gate and review. If you need
 one environment to try a version ahead of its siblings, give that environment its
 own `stack/` folder temporarily, then fold it back once the version is promoted.
 
-Run `plan` through the wrapper after changing the module ref. It runs `init`
-using a separate `TF_DATA_DIR` for that environment, downloads the pinned
-module version, then plans against that environment's backend and variables.
-Apply only after reviewing the plan:
-
-```powershell
-.\scripts\tf.ps1 dev env1 plan
-.\scripts\tf.ps1 dev env1 apply
-```
-
-Repeat for `dev env2` and `dev env3` when ready; they share the dev stack code,
-but each has its own state and must be planned and applied separately.
+After changing a module ref, run `terraform init -upgrade` from that account's
+`stack/` directory with the selected environment's `TF_DATA_DIR` and
+`backend.hcl`. Terraform then downloads the pinned module version for that
+environment. Plan and apply each environment separately; env1, env2, and env3
+share the stack code but have independent state.
 
 To release a later version, commit the module change, create a Git tag such as
 `v1.4.0` on that commit, and push the tag. Then update the desired account's
@@ -181,8 +186,10 @@ s3://demoapp-tfstate-dev-111111111111/dev/env3/app/terraform.tfstate
 ```
 
 The account is the security boundary, so the bucket belongs to the account. The
-environments differ by **key**. One DynamoDB lock table per account is enough —
-the lock is per state file, so env1 and env2 never block each other.
+environments differ by **key**. Each backend uses Terraform's S3 lockfile
+(`use_lockfile = true`), stored beside its state object. Locks are per state
+file, so env1 and env2 never block each other. The bootstrap-created DynamoDB
+tables are retained for now but are no longer referenced by the backends.
 
 `backend.tf` holds an empty `backend "s3" {}` block. The real values come from
 `live/<account>/<env>/backend.hcl` at init time. Nothing in the code can point a
@@ -222,7 +229,8 @@ one account held one environment. It is not enough now.
 
 ### Once per AWS account
 
-Creates the state bucket and lock table. Uses local state.
+Creates the state bucket and legacy DynamoDB table. Uses local state; backends
+now use S3-native lockfiles, so the DynamoDB table is not used for locking.
 
 ```powershell
 cd bootstrap
@@ -234,24 +242,31 @@ Repeat in the test and prod accounts.
 
 ### Normal work
 
+Run Terraform directly from the account's `stack/` directory. For dev env1,
+from the repository root:
+
 ```powershell
-.\scripts\tf.ps1 dev  env1 plan
-.\scripts\tf.ps1 dev  env1 apply
-
-.\scripts\tf.ps1 prod env2 plan
+Set-Location live/dev/stack
+$env:TF_DATA_DIR = (Join-Path (Resolve-Path ..\env1).Path '.terraform')
+terraform init -reconfigure -backend-config=..\env1\backend.hcl
+terraform plan `
+    -var-file=..\account.tfvars `
+    -var-file=..\env1\terraform.tfvars `
+    -out=..\env1\tfplan
+terraform apply ..\env1\tfplan
 ```
 
-Linux, macOS or CI:
+The Terraform files are in `stack/`, so running `terraform init` from
+`live/dev/` itself will not select the root module. To operate on env2 or env3,
+change every `env1` path above to the selected environment and set
+`TF_DATA_DIR` to that environment's `.terraform` directory before running
+`init`. Keep the `TF_DATA_DIR` value set through plan and apply, and review the
+plan before applying it.
 
-```bash
-./scripts/tf.sh dev env1 plan
-./scripts/tf.sh dev env1 apply
-```
+### What to specify for each direct run
 
-### What the wrapper does, and why you need one
-
-Because all environments in an account share one `stack/` folder, every run must
-be told three things:
+Because all environments in an account share one `stack/` folder, every direct
+run needs these three environment-specific inputs:
 
 | Thing | Where it comes from |
 |---|---|
@@ -259,19 +274,10 @@ be told three things:
 | which values to use | `account.tfvars` then `<env>/terraform.tfvars` |
 | where to keep `.terraform` | `TF_DATA_DIR=../<env>/.terraform` |
 
-The third one is the dangerous one. Without a separate `TF_DATA_DIR`, env1 and
-env2 share one `.terraform` folder and one cached backend pointer — and you can
-apply env1's saved plan onto env2's state. The wrapper makes that impossible.
-
-Raw commands, if you want to see what the wrapper runs:
-
-```bash
-cd live/dev/stack
-export TF_DATA_DIR=../env1/.terraform
-terraform init -reconfigure -backend-config=../env1/backend.hcl
-terraform plan -var-file=../account.tfvars -var-file=../env1/terraform.tfvars -out=../env1/tfplan
-terraform apply ../env1/tfplan
-```
+The separate `TF_DATA_DIR` is essential. Without it, env1 and env2 share one
+`.terraform` folder and cached backend pointer. Keep each saved plan in its
+environment folder as shown above; do not apply one environment's plan to
+another environment.
 
 ## Two layers of values
 

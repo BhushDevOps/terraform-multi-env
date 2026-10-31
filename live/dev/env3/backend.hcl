@@ -2,5 +2,5 @@
 bucket         = "demoapp-tfstate-dev-111111111111"
 key            = "dev/env3/app/terraform.tfstate"
 region         = "ap-south-1"
-dynamodb_table = "demoapp-tflock-dev"
+use_lockfile   = true
 encrypt        = true
